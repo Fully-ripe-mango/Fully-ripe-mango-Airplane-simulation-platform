@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="zh">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>四旋翼无人机3D风干扰仿真</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #ffffff;
+            font-family: Arial, sans-serif;
+        }
+
+        #controlPanel {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 15px;
+            border-radius: 8px;
+            color: #333;
+            min-width: 300px;
+            z-index: 100;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+            border: 1px solid #ddd;
+        }
+
+        #controlPanel h3 {
+            margin-top: 0;
+            color: #4CAF50;
+        }
+
+        .control-group {
+            margin: 10px 0;
+            padding: 8px;
+            background: rgba(240, 240, 240, 0.8);
+            border-radius: 4px;
+            border: 1px solid #ddd;
+        }
+
+        .control-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+
+        .control-group input {
+            width: 60px;
+            margin: 2px;
+            padding: 4px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid #999;
+            color: #333;
+            border-radius: 3px;
+        }
+
+        button {
+            padding: 8px 15px;
+            margin: 5px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        button:hover {
+            background: #45a049;
+        }
+
+        button.active {
+            background: #2196F3;
+        }
+
+        #info {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            color: #333;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 11px;
+            pointer-events: none;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+            border: 1px solid #ddd;
+        }
+
+        .wind-mode-section {
+            border-top: 1px solid #ccc;
+            margin-top: 10px;
+            padding-top: 10px;
+        }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <div id="controlPanel">
+        <h3>四旋翼控制面板</h3>
+
+        <div class="control-group">
+            <label>风力扰动模式：</label>
+            <button id="mode1Btn" class="active">模式1：随机风</button>
+            <button id="mode2Btn">模式2：固定风</button>
+        </div>
+
+        <div id="mode1Controls" class="wind-mode-section">
+            <div class="control-group">
+                <label>风力大小倍数 a：</label>
+                <input type="number" id="windFactorA" value="1.0" step="0.1" min="0" max="5">
+                <span style="font-size: 11px; color: #666;">(风速 = 基础风速 × a)</span>
+            </div>
+        </div>
+
+        <div id="mode2Controls" class="wind-mode-section" style="display: none;">
+            <div class="control-group">
+                <label>风速向量 h = [x, y, z] (m/s)：</label>
+                <input type="number" id="magX" value="5" step="0.5" min="0" max="10">
+                <input type="number" id="magY" value="0" step="0.5" min="0" max="10">
+                <input type="number" id="magZ" value="0" step="0.5" min="0" max="10">
+            </div>
+        </div>
+
+        <div class="control-group">
+            <label>飞行模式：</label>
+            <button id="hoverBtn" class="active">悬停模式</button>
+            <button id="waypointBtn">定点飞行</button>
+        </div>
+
+        <div id="waypointControls" class="wind-mode-section" style="display: none;">
+            <div class="control-group">
+                <label>目标点 [x, y, z] (m)：</label>
+                <input type="number" id="targetX" value="0" step="0.5">
+                <input type="number" id="targetY" value="0" step="0.5">
+                <input type="number" id="targetZ" value="1" step="0.5">
+            </div>
+            <div class="control-group">
+                <label>目标偏航角 ψ (度)：</label>
+                <input type="number" id="targetPsi" value="0" step="5" min="-180" max="180">
+            </div>
+        </div>
+
+        <div class="control-group">
+            <button id="resetBtn">重置仿真</button>
+            <button id="pauseBtn">暂停/继续</button>
+        </div>
+    </div>
+
+    <div id="info">
+        <h4>状态信息</h4>
+        <p id="positionInfo">位置: (0, 0, 0)</p>
+        <p id="attitudeInfo">姿态: (0°, 0°, 0°)</p>
+        <p id="windInfo">风速: (0, 0, 0) m/s</p>
+        <p id="timeInfo">时间: 0.0s</p>
+        <hr>
+        <p style="font-size: 10px; color: #666;">操作：左键旋转 / 滚轮缩放 / 右键平移</p>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // ============================================================================
+        // 1. 系统参数定义
+        // ============================================================================
+        class QuadParams {
+            constructor() {
+                this.m = 1.2;          // 质量 (kg)
+                this.g = 9.81;         // 重力加速度 (m/s^2)
+                this.Jx = 0.015;       // 滚转转动惯量 (kg*m^2)
+                this.Jy = 0.015;       // 俯仰转动惯量 (kg*m^2)
+                this.Jz = 0.025;       // 偏航转动惯量 (kg*m^2)
+                this.l = 0.25;         // 机臂长度 (m)
+
+                // 气动参数
+                this.rho = 1.225;      // 空气密度 (kg/m^3)
+                this.Cd = 0.8;         // 阻力系数
+                this.Area = 0.05;      // 迎风面积 (m^2)
+
+                // 风致干扰模型参数 (气动中心偏置)
+                // 包含xy分量以便产生偏航力矩
+                this.r_c = new THREE.Vector3(0.01, 0.01, -0.02);
+            }
+        }
+
+        // ============================================================================
+        // 2. 完整的6DOF动力学模型
+        // ============================================================================
+        class QuadModel {
+            constructor(params, dt) {
+                this.p = params;
+                this.dt = dt;
+
+                // 状态向量: [x, vx, y, vy, z, vz, phi, omega_phi, theta, omega_theta, psi, omega_psi]
+                this.state = new Float32Array(12);
+
+                // 初始化位置在原点上方1米
+                this.state[4] = 1.0; // z = 1.0m
+            }
+
+            step(T_tot, tau_phi, tau_theta, tau_psi, wind_vel) {
+                const [x, vx, y, vy, z, vz, phi, omega_phi, theta, omega_theta, psi, omega_psi] = this.state;
+                const p = this.p;
+
+                // --- A. 计算相对空速 (三维) ---
+                const v_rel = new THREE.Vector3(
+                    wind_vel.x - vx,
+                    wind_vel.y - vy,
+                    wind_vel.z - vz
+                );
+                const v_rel_norm = v_rel.length();
+
+                // --- B. 计算空气阻力 (F_drag) ---
+                let F_drag = new THREE.Vector3(0, 0, 0);
+                if (v_rel_norm > 0.001) {
+                    const F_drag_mag = 0.5 * p.rho * p.Area * p.Cd * (v_rel_norm * v_rel_norm);
+                    F_drag = v_rel.clone().normalize().multiplyScalar(F_drag_mag);
+                }
+
+                // --- C. 计算风致扰动力矩 (tau_w = r_c × F_drag) ---
+                const tau_wind = new THREE.Vector3();
+                tau_wind.crossVectors(p.r_c, F_drag);
+
+                // 使用叉乘结果计算三个方向的力矩
+                // 为了增强偏航力矩效果，可以添加额外的耦合项
+                const tau_phi_w = tau_wind.x + 0.01 * F_drag.y;   // 滚转力矩
+                const tau_theta_w = tau_wind.y + 0.01 * F_drag.x; // 俯仰力矩
+                // 偏航力矩：使用叉乘的z分量 + 风在xy平面的耦合效应
+                const tau_psi_w = tau_wind.z + 0.005 * (F_drag.x * Math.sin(psi) - F_drag.y * Math.cos(psi));
+
+                // --- D. 动力学方程求解 (小角度近似) ---
+                // 平动动力学
+                const ax = (T_tot * theta + F_drag.x) / p.m;
+                const ay = (-T_tot * phi + F_drag.y) / p.m;
+                const az = (T_tot - p.m * p.g + F_drag.z) / p.m;
+
+                // 转动动力学
+                const alpha_phi = (tau_phi + tau_phi_w) / p.Jx;
+                const alpha_theta = (tau_theta + tau_theta_w) / p.Jy;
+                const alpha_psi = (tau_psi + tau_psi_w) / p.Jz;
+
+                // --- E. 欧拉积分更新状态 ---
+                this.state[0] += vx * this.dt;  // x
+                this.state[1] += ax * this.dt;  // vx
+                this.state[2] += vy * this.dt;  // y
+                this.state[3] += ay * this.dt;  // vy
+                this.state[4] += vz * this.dt;  // z
+                this.state[5] += az * this.dt;  // vz
+                this.state[6] += omega_phi * this.dt;    // phi
+                this.state[7] += alpha_phi * this.dt;     // omega_phi
+                this.state[8] += omega_theta * this.dt;   // theta
+                this.state[9] += alpha_theta * this.dt;   // omega_theta
+                this.state[10] += omega_psi * this.dt;    // psi
+                this.state[11] += alpha_psi * this.dt;    // omega_psi
+
+                return {
+                    F_drag: F_drag,
+                    tau_wind: new THREE.Vector3(tau_phi_w, tau_theta_w, tau_psi_w)
+                };
+            }
+        }
+
+        // ============================================================================
+        // 3. 控制器（含干扰观测器）
+        // ============================================================================
+        class QuadController {
+            constructor(params, dt) {
+                this.p = params;
+                this.dt = dt;
+
+                // PID 参数
+                this.Kp_x = 1.5; this.Kd_x = 1.8;
+                this.Kp_y = 1.5; this.Kd_y = 1.8;
+                this.Kp_z = 10.0; this.Kd_z = 5.0;
+                this.Kp_phi = 6.0; this.Kd_phi = 1.2;
+                this.Kp_theta = 6.0; this.Kd_theta = 1.2;
+                this.Kp_psi = 4.0; this.Kd_psi = 1.0; // 增强偏航控制增益
+
+                // 干扰观测器状态
+                this.est_dist_acc_x = 0.0;
+                this.est_dist_acc_y = 0.0;
+                this.est_dist_torque_phi = 0.0;
+                this.est_dist_torque_theta = 0.0;
+
+                // 观测器增益
+                this.L_acc = 8.0;
+                this.L_tor = 15.0;
+            }
+
+            updateObserver(state, prev_state, u_prev, T_prev) {
+                const [x, vx, y, vy, z, vz, phi, omega_phi, theta, omega_theta, psi, omega_psi] = state;
+                const [x_p, vx_p, y_p, vy_p, z_p, vz_p, phi_p, omega_phi_p, theta_p, omega_theta_p, psi_p, omega_psi_p] = prev_state;
+
+                // 计算测量加速度
+                const meas_acc_x = (vx - vx_p) / this.dt;
+                const meas_acc_y = (vy - vy_p) / this.dt;
+                const meas_alpha_phi = (omega_phi - omega_phi_p) / this.dt;
+                const meas_alpha_theta = (omega_theta - omega_theta_p) / this.dt;
+
+                // 模型理论加速度
+                const model_acc_x = (T_prev * theta_p) / this.p.m;
+                const model_acc_y = (-T_prev * phi_p) / this.p.m;
+                const model_alpha_phi = u_prev.tau_phi / this.p.Jx;
+                const model_alpha_theta = u_prev.tau_theta / this.p.Jy;
+
+                // 更新观测器
+                const err_acc_x = meas_acc_x - model_acc_x;
+                const err_acc_y = meas_acc_y - model_acc_y;
+                this.est_dist_acc_x += this.L_acc * (err_acc_x - this.est_dist_acc_x) * this.dt;
+                this.est_dist_acc_y += this.L_acc * (err_acc_y - this.est_dist_acc_y) * this.dt;
+
+                const torque_residual_phi = (this.p.Jx * meas_alpha_phi) - (u_prev.tau_phi + this.est_dist_torque_phi);
+                const torque_residual_theta = (this.p.Jy * meas_alpha_theta) - (u_prev.tau_theta + this.est_dist_torque_theta);
+                this.est_dist_torque_phi += this.L_tor * torque_residual_phi * this.dt;
+                this.est_dist_torque_theta += this.L_tor * torque_residual_theta * this.dt;
+            }
+
+            compute(state, targets) {
+                const [x, vx, y, vy, z, vz, phi, omega_phi, theta, omega_theta, psi, omega_psi] = state;
+                const [x_des, y_des, z_des, psi_des] = targets;
+
+                // 高度控制
+                const T_hover = this.p.m * this.p.g;
+                const T_tot = T_hover + this.Kp_z * (z_des - z) + this.Kd_z * (0 - vz);
+                const T_tot_clipped = Math.max(5, Math.min(25, T_tot));
+
+                // 水平位置控制（含前馈补偿）
+                const ax_pid = this.Kp_x * (x_des - x) + this.Kd_x * (0 - vx);
+                const ay_pid = this.Kp_y * (y_des - y) + this.Kd_y * (0 - vy);
+                const ax_des = ax_pid - this.est_dist_acc_x;
+                const ay_des = ay_pid - this.est_dist_acc_y;
+
+                // 反解期望角度
+                const theta_ref = ax_des / this.p.g;
+                const phi_ref = -ay_des / this.p.g;
+                const theta_ref_clipped = Math.max(-0.6, Math.min(0.6, theta_ref));
+                const phi_ref_clipped = Math.max(-0.6, Math.min(0.6, phi_ref));
+
+                // 姿态控制（含前馈补偿）
+                const u_phi_pid = this.Kp_phi * (phi_ref_clipped - phi) + this.Kd_phi * (0 - omega_phi);
+                const u_theta_pid = this.Kp_theta * (theta_ref_clipped - theta) + this.Kd_theta * (0 - omega_theta);
+                const u_psi_pid = this.Kp_psi * (psi_des - psi) + this.Kd_psi * (0 - omega_psi);
+
+                const u_phi = u_phi_pid - this.est_dist_torque_phi;
+                const u_theta = u_theta_pid - this.est_dist_torque_theta;
+                const u_psi = u_psi_pid;
+
+                return {
+                    T_tot: T_tot_clipped,
+                    tau_phi: u_phi,
+                    tau_theta: u_theta,
+                    tau_psi: u_psi
+                };
+            }
+        }
+
+        // ============================================================================
+        // 4. 3D可视化初始化
+        // ============================================================================
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xffffff);
+        scene.fog = new THREE.Fog(0xffffff, 20, 100);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(15, 10, 15);
+        camera.lookAt(0, 1, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // 添加辅助工具（调整颜色以适应白色背景）
+        const gridHelper = new THREE.GridHelper(50, 50, 0x888888, 0xcccccc);
+        scene.add(gridHelper);
+        const axesHelper = new THREE.AxesHelper(5);
+        scene.add(axesHelper);
+
+        // 轨道控制器
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+        // 创建四旋翼模型（简化版）
+        function createQuadrotor() {
+            const group = new THREE.Group();
+
+            // 中心机身
+            const bodyGeometry = new THREE.BoxGeometry(0.3, 0.1, 0.3);
+            const bodyMaterial = new THREE.MeshPhongMaterial({ color: 0x333333 });
+            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            group.add(body);
+
+            // 四个旋翼臂
+            const armGeometry = new THREE.CylinderGeometry(0.02, 0.02, 0.5);
+            const armMaterial = new THREE.MeshPhongMaterial({ color: 0x666666 });
+
+            const positions = [
+                [0.25, 0, 0], [-0.25, 0, 0],
+                [0, 0, 0.25], [0, 0, -0.25]
+            ];
+
+            positions.forEach((pos, i) => {
+                const arm = new THREE.Mesh(armGeometry, armMaterial);
+                arm.position.set(pos[0], pos[1], pos[2]);
+                arm.rotation.z = Math.PI / 2;
+                group.add(arm);
+
+                // 旋翼（圆盘）
+                const rotorGeometry = new THREE.CylinderGeometry(0.15, 0.15, 0.01);
+                const rotorMaterial = new THREE.MeshPhongMaterial({
+                    color: i < 2 ? 0x00ff00 : 0xff0000,
+                    transparent: true,
+                    opacity: 0.7
+                });
+                const rotor = new THREE.Mesh(rotorGeometry, rotorMaterial);
+                rotor.position.set(pos[0], pos[1] + 0.05, pos[2]);
+                rotor.userData.index = i;
+                group.add(rotor);
+            });
+
+            return group;
+        }
+
+        const quadrotor = createQuadrotor();
+        scene.add(quadrotor);
+
+        // 添加光源
+        const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(10, 10, 5);
+        scene.add(directionalLight);
+
+        // 轨迹线
+        const MAX_POINTS = 1000;
+        const trailGeometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(MAX_POINTS * 3);
+        trailGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        trailGeometry.setDrawRange(0, 0);
+        const trailMaterial = new THREE.LineBasicMaterial({ color: 0xff6600, linewidth: 2 });
+        const trail = new THREE.Line(trailGeometry, trailMaterial);
+        scene.add(trail);
+
+        // 风向量可视化（调整为更深的颜色以适应白色背景）
+        const windArrowHelper = new THREE.ArrowHelper(
+            new THREE.Vector3(1, 0, 0),
+            new THREE.Vector3(0, 0, 0),
+            2,
+            0x0066ff,
+            0.5,
+            0.3
+        );
+        scene.add(windArrowHelper);
+
+        // ============================================================================
+        // 5. 仿真系统
+        // ============================================================================
+        const params = new QuadParams();
+        const dt = 0.01;
+        const quad = new QuadModel(params, dt);
+        const controller = new QuadController(params, dt);
+
+        let pointsCount = 0;
+        let isPaused = false;
+        let windMode = 1; // 1: 随机风, 2: 固定风
+        let fixedWindVel = new THREE.Vector3(5, 0, 0); // 风速向量h（直接使用）
+
+        // 飞行模式
+        let flightMode = 'hover'; // 'hover' 或 'waypoint'
+        let windFactorA = 1.0; // 随机风大小倍数参数a
+
+        // 平滑随机风的状态变量（使用低通滤波）
+        let smoothWindVel = new THREE.Vector3(0, 0, 0);
+        let smoothWindTarget = new THREE.Vector3(0, 0, 0);
+        const windSmoothFactor = 0.05; // 平滑系数（越小越平滑）
+        let windChangeCounter = 0;
+        const windChangeInterval = 30; // 每30帧改变一次目标风速
+
+        // 目标位置（动态更新）
+        let targets = [0.0, 0.0, 1.0, 0.0]; // x, y, z, psi
+
+        let prev_state = new Float32Array(quad.state);
+        let u_prev = { T_tot: params.m * params.g, tau_phi: 0, tau_theta: 0, tau_psi: 0 };
+        let simTime = 0;
+
+        // 控制面板事件
+        document.getElementById('mode1Btn').addEventListener('click', () => {
+            windMode = 1;
+            document.getElementById('mode1Btn').classList.add('active');
+            document.getElementById('mode2Btn').classList.remove('active');
+            document.getElementById('mode1Controls').style.display = 'block';
+            document.getElementById('mode2Controls').style.display = 'none';
+        });
+
+        document.getElementById('mode2Btn').addEventListener('click', () => {
+            windMode = 2;
+            document.getElementById('mode2Btn').classList.add('active');
+            document.getElementById('mode1Btn').classList.remove('active');
+            document.getElementById('mode1Controls').style.display = 'none';
+            document.getElementById('mode2Controls').style.display = 'block';
+            updateFixedWind();
+        });
+
+        // 参数a输入事件
+        document.getElementById('windFactorA').addEventListener('input', () => {
+            windFactorA = parseFloat(document.getElementById('windFactorA').value) || 1.0;
+            // 限制范围
+            if (windFactorA < 0) windFactorA = 0;
+            if (windFactorA > 5) windFactorA = 5;
+            document.getElementById('windFactorA').value = windFactorA;
+        });
+
+        function updateFixedWind() {
+            const magX = parseFloat(document.getElementById('magX').value) || 0;
+            const magY = parseFloat(document.getElementById('magY').value) || 0;
+            const magZ = parseFloat(document.getElementById('magZ').value) || 0;
+
+            // 直接使用风速向量
+            fixedWindVel = new THREE.Vector3(magX, magY, magZ);
+        }
+
+        function updateTargets() {
+            const targetX = parseFloat(document.getElementById('targetX').value) || 0;
+            const targetY = parseFloat(document.getElementById('targetY').value) || 0;
+            const targetZ = parseFloat(document.getElementById('targetZ').value) || 1;
+            const targetPsiDeg = parseFloat(document.getElementById('targetPsi').value) || 0;
+            const targetPsi = targetPsiDeg * Math.PI / 180; // 转换为弧度
+
+            targets = [targetX, targetY, targetZ, targetPsi];
+        }
+
+        ['magX', 'magY', 'magZ'].forEach(id => {
+            document.getElementById(id).addEventListener('input', () => {
+                if (windMode === 2) updateFixedWind();
+            });
+        });
+
+        // 飞行模式切换
+        document.getElementById('hoverBtn').addEventListener('click', () => {
+            flightMode = 'hover';
+            document.getElementById('hoverBtn').classList.add('active');
+            document.getElementById('waypointBtn').classList.remove('active');
+            document.getElementById('waypointControls').style.display = 'none';
+            // 悬停模式：目标点在原点上方1米
+            targets = [0.0, 0.0, 1.0, 0.0];
+        });
+
+        document.getElementById('waypointBtn').addEventListener('click', () => {
+            flightMode = 'waypoint';
+            document.getElementById('waypointBtn').classList.add('active');
+            document.getElementById('hoverBtn').classList.remove('active');
+            document.getElementById('waypointControls').style.display = 'block';
+            updateTargets();
+        });
+
+        // 目标点输入事件
+        ['targetX', 'targetY', 'targetZ', 'targetPsi'].forEach(id => {
+            document.getElementById(id).addEventListener('input', () => {
+                if (flightMode === 'waypoint') updateTargets();
+            });
+        });
+
+        document.getElementById('resetBtn').addEventListener('click', () => {
+            quad.state = new Float32Array(12);
+            quad.state[4] = 1.0; // z = 1.0m
+            prev_state = new Float32Array(quad.state);
+            pointsCount = 0;
+            trailGeometry.setDrawRange(0, 0);
+            simTime = 0;
+            controller.est_dist_acc_x = 0;
+            controller.est_dist_acc_y = 0;
+            controller.est_dist_torque_phi = 0;
+            controller.est_dist_torque_theta = 0;
+            // 重置平滑风速
+            smoothWindVel.set(0, 0, 0);
+            smoothWindTarget.set(0, 0, 0);
+            windChangeCounter = 0;
+            // 根据飞行模式重置目标
+            if (flightMode === 'hover') {
+                targets = [0.0, 0.0, 1.0, 0.0];
+            } else {
+                updateTargets();
+            }
+        });
+
+        document.getElementById('pauseBtn').addEventListener('click', () => {
+            isPaused = !isPaused;
+        });
+
+        // ============================================================================
+        // 6. 动画循环
+        // ============================================================================
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (!isPaused) {
+                // 生成风场
+                let wind_vel = new THREE.Vector3(0, 0, 0);
+
+                if (simTime >= 2.0) { // 2秒后开始有风
+                    if (windMode === 1) {
+                        // 模式1：平滑随机风（使用低通滤波）
+                        windChangeCounter++;
+
+                        // 每隔一定时间生成新的目标风速
+                        if (windChangeCounter >= windChangeInterval) {
+                            windChangeCounter = 0;
+                            // 风速范围：6-12 m/s（增大范围以便清晰看到效果）
+                            const targetSpeed = 6 + Math.random() * 6; // 6-12 m/s
+                            const targetDir = new THREE.Vector3(
+                                (Math.random() - 0.5) * 2,
+                                (Math.random() - 0.5) * 2,
+                                (Math.random() - 0.5) * 2
+                            ).normalize();
+                            smoothWindTarget = targetDir.multiplyScalar(targetSpeed);
+                        }
+
+                        // 使用低通滤波平滑过渡到目标风速
+                        smoothWindVel.lerp(smoothWindTarget, windSmoothFactor);
+                        // 应用参数a：风速 = 基础风速 × a
+                        wind_vel = smoothWindVel.clone().multiplyScalar(windFactorA);
+                    } else {
+                        // 模式2：固定风
+                        wind_vel = fixedWindVel.clone();
+                    }
+                } else {
+                    // 2秒前无风，重置平滑风速
+                    smoothWindVel.set(0, 0, 0);
+                    smoothWindTarget.set(0, 0, 0);
+                    windChangeCounter = 0;
+                }
+
+                // 更新干扰观测器
+                controller.updateObserver(quad.state, prev_state, u_prev, u_prev.T_tot);
+                prev_state = new Float32Array(quad.state);
+
+                // 计算控制量
+                const u = controller.compute(quad.state, targets);
+                u_prev = u;
+
+                // 物理步进
+                quad.step(u.T_tot, u.tau_phi, u.tau_theta, u.tau_psi, wind_vel);
+
+                simTime += dt;
+            }
+
+            // 更新3D模型位置和姿态
+            const [x, vx, y, vy, z, vz, phi, omega_phi, theta, omega_theta, psi, omega_psi] = quad.state;
+
+            quadrotor.position.set(x, z, y); // Three.js使用Y-up，我们模型是Z-up
+            quadrotor.rotation.set(phi, psi, theta); // 注意顺序：roll, yaw, pitch
+
+            // 更新轨迹
+            const trailPositions = trail.geometry.attributes.position.array;
+            if (pointsCount < MAX_POINTS) {
+                trailPositions[pointsCount * 3] = x;
+                trailPositions[pointsCount * 3 + 1] = z;
+                trailPositions[pointsCount * 3 + 2] = y;
+                pointsCount++;
+                trail.geometry.setDrawRange(0, pointsCount);
+            } else {
+                for (let i = 0; i < MAX_POINTS - 1; i++) {
+                    trailPositions[i * 3] = trailPositions[(i + 1) * 3];
+                    trailPositions[i * 3 + 1] = trailPositions[(i + 1) * 3 + 1];
+                    trailPositions[i * 3 + 2] = trailPositions[(i + 1) * 3 + 2];
+                }
+                trailPositions[(MAX_POINTS - 1) * 3] = x;
+                trailPositions[(MAX_POINTS - 1) * 3 + 1] = z;
+                trailPositions[(MAX_POINTS - 1) * 3 + 2] = y;
+            }
+            trail.geometry.attributes.position.needsUpdate = true;
+
+            // 更新风向量可视化
+            if (simTime >= 2.0) {
+                let wind_vel = new THREE.Vector3(0, 0, 0);
+                if (windMode === 1) {
+                    // 使用平滑后的风速，并应用参数a
+                    wind_vel = smoothWindVel.clone().multiplyScalar(windFactorA);
+                } else {
+                    wind_vel = fixedWindVel.clone();
+                }
+
+                if (wind_vel.length() > 0.1) {
+                    windArrowHelper.setDirection(wind_vel.clone().normalize());
+                    windArrowHelper.setLength(wind_vel.length() * 0.3);
+                    windArrowHelper.position.set(x, z, y);
+                } else {
+                    windArrowHelper.setLength(0);
+                }
+            } else {
+                windArrowHelper.setLength(0);
+            }
+
+            // 更新信息显示
+            document.getElementById('positionInfo').textContent =
+                `位置: (${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)})`;
+            document.getElementById('attitudeInfo').textContent =
+                `姿态: (${(phi * 180 / Math.PI).toFixed(1)}°, ${(theta * 180 / Math.PI).toFixed(1)}°, ${(psi * 180 / Math.PI).toFixed(1)}°)`;
+
+            let wind_vel_display = new THREE.Vector3(0, 0, 0);
+            if (simTime >= 2.0) {
+                if (windMode === 1) {
+                    // 使用平滑后的风速显示，并应用参数a
+                    wind_vel_display = smoothWindVel.clone().multiplyScalar(windFactorA);
+                } else {
+                    wind_vel_display = fixedWindVel.clone();
+                }
+            }
+            document.getElementById('windInfo').textContent =
+                `风速: (${wind_vel_display.x.toFixed(2)}, ${wind_vel_display.y.toFixed(2)}, ${wind_vel_display.z.toFixed(2)}) m/s | 大小: ${wind_vel_display.length().toFixed(2)} m/s`;
+            document.getElementById('timeInfo').textContent = `时间: ${simTime.toFixed(1)}s`;
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // 窗口大小自适应
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+
+</html>
